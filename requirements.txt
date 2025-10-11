@@ -1,9 +1,10 @@
-streamlit == 1.50.0
-pandas == 2.3.3
-numpy == 1.23.5
-plotly == 6.2.0
-tensorflow==2.10.1
-keras==2.10.0
-protobuf==3.20.3
-h5py==3.14.0
+streamlit
+pandas
+numpy 
+plotly
+tensorflow
+keras
+protobuf
+h5py
+
 
