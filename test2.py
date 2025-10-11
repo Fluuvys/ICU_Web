@@ -101,7 +101,7 @@ def build_model(values_shape, mask_shape, time_gaps_shape, static_shape, l2_reg=
     static_input = Input(shape=static_shape, name='static')
     
     grud_inputs = (values_input, mask_input, time_gaps_input)
-    grud_layer = GRUDLayer(64)([values_input, mask_input, time_gaps_input])
+    grud_layer = GRUDLayer(64)(grud_inputs)
     
     static_x = Dense(32, kernel_regularizer=l2(l2_reg))(static_input)
     static_x = BatchNormalization()(static_x)
@@ -552,5 +552,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
