@@ -14,6 +14,12 @@ from tensorflow.keras.models import Model
 # MODEL ARCHITECTURE DEFINITIONS
 # =============================================================================
 
+import tensorflow as tf
+from tensorflow.keras.layers import Layer, Input, Dense, BatchNormalization, ReLU, Dropout, Concatenate
+from tensorflow.keras.regularizers import l2
+from tensorflow.keras import backend as K
+from tensorflow.keras.models import Model
+
 class GRUDCell(Layer):
     def __init__(self, units, feature_dim, **kwargs):
         super(GRUDCell, self).__init__(**kwargs)
@@ -73,96 +79,56 @@ class GRUDCell(Layer):
         config.update({'units': self.units, 'feature_dim': self.feature_dim})
         return config
 
-# class GRUDLayer(Layer):
-#     def __init__(self, units, **kwargs):
-#         super(GRUDLayer, self).__init__(**kwargs)
-#         self.units = units
-#         self.grud_cell = None
-        
-#     def build(self, input_shape):
-#         values_shape, mask_shape, time_gaps_shape = input_shape
-#         feature_dim = values_shape[-1]
-#         self.grud_cell = GRUDCell(self.units, feature_dim)
-#         self.rnn = RNN(self.grud_cell, return_sequences=False)
-#         super().build(input_shape)
-        
-#     def call(self, inputs):
-#         return self.rnn(inputs)
-    
-#     def get_config(self):
-#         config = super().get_config()
-#         config.update({'units': self.units})
-#         return config
-
 
 class GRUDLayer(Layer):
+    """Custom GRU-D layer that processes time series with missingness"""
     def __init__(self, units, **kwargs):
         super(GRUDLayer, self).__init__(**kwargs)
         self.units = units
         self.grud_cell = None
         
     def build(self, input_shape):
-        # input_shape is a tuple of (values_shape, mask_shape, time_gaps_shape)
-        values_shape, mask_shape, time_gaps_shape = input_shape
+        # input_shape is a list/tuple of (values_shape, mask_shape, time_gaps_shape)
+        values_shape = input_shape[0]
         feature_dim = values_shape[-1]
+        
+        # Create the GRU-D cell
         self.grud_cell = GRUDCell(self.units, feature_dim)
-        self.grud_cell.build(input_shape)
+        
+        # Build the cell with the input shapes
+        self.grud_cell.build([values_shape[1:], values_shape[1:], input_shape[2][1:]])
+        
         super().build(input_shape)
         
     def call(self, inputs):
-        # Unpack inputs - handle both list and tuple
-        if isinstance(inputs, (list, tuple)):
-            if len(inputs) == 3:
-                values, mask, time_gaps = inputs
-            else:
-                # Nested tuple case
-                values, mask, time_gaps = inputs[0] if isinstance(inputs[0], (list, tuple)) else inputs
-        else:
-            raise ValueError("GRUDLayer expects 3 inputs: [values, mask, time_gaps]")
+        # Unpack inputs - they come as a list/tuple
+        values, mask, time_gaps = inputs
         
+        # Get dimensions
         batch_size = tf.shape(values)[0]
-        timesteps = values.shape[1] if values.shape[1] is not None else tf.shape(values)[1]
+        timesteps = values.shape[1]  # This should be 200 (static)
         
         # Initialize hidden state
-        initial_state = tf.zeros((batch_size, self.units))
+        initial_state = [tf.zeros((batch_size, self.units))]
         
-        # Use tf.TensorArray for better performance
-        def step_function(time, prev_state):
-            x_t = values[:, time, :]
-            m_t = mask[:, time, :]
-            delta_t = time_gaps[:, time, :]
+        # Process each timestep
+        states = initial_state
+        
+        for t in range(timesteps):
+            # Extract data for current timestep
+            x_t = values[:, t, :]
+            m_t = mask[:, t, :]
+            delta_t = time_gaps[:, t, :]
             
-            output, new_state = self.grud_cell([x_t, m_t, delta_t], prev_state)
-            return time + 1, new_state
+            # Call GRU-D cell
+            _, states = self.grud_cell([x_t, m_t, delta_t], states)
         
-        # Use while_loop for static graph compatibility
-        if isinstance(timesteps, int):
-            # Static shape - can use regular loop
-            states = [initial_state]
-            for t in range(timesteps):
-                x_t = values[:, t, :]
-                m_t = mask[:, t, :]
-                delta_t = time_gaps[:, t, :]
-                _, states = self.grud_cell([x_t, m_t, delta_t], states)
-            final_output = states[0]
-        else:
-            # Dynamic shape - use while_loop
-            _, final_states = tf.while_loop(
-                cond=lambda time, _: time < timesteps,
-                body=step_function,
-                loop_vars=[0, [initial_state]]
-            )
-            final_output = final_states[0]
-        
-        return final_output
+        # Return final hidden state (last timestep output)
+        return states[0]
     
     def compute_output_shape(self, input_shape):
-        if isinstance(input_shape[0], tuple):
-            values_shape = input_shape[0][0]
-        else:
-            values_shape = input_shape[0]
-        batch_size = values_shape[0]
-        return (batch_size, self.units)
+        # Output shape is (batch_size, units)
+        return (input_shape[0][0], self.units)
     
     def get_config(self):
         config = super().get_config()
@@ -171,32 +137,40 @@ class GRUDLayer(Layer):
 
 
 def build_model(values_shape, mask_shape, time_gaps_shape, static_shape, l2_reg=0.01):
+    """Build the complete model architecture"""
     values_input = Input(shape=values_shape, name='values')
     mask_input = Input(shape=mask_shape, name='mask')
     time_gaps_input = Input(shape=time_gaps_shape, name='time_gaps')
     static_input = Input(shape=static_shape, name='static')
     
-    # FIX: Pass inputs as a list, not a tuple
-    grud_layer = GRUDLayer(64)([values_input, mask_input, time_gaps_input])
+    # GRU-D Layer - pass inputs as a LIST
+    grud_output = GRUDLayer(64)([values_input, mask_input, time_gaps_input])
     
+    # Static features processing
     static_x = Dense(32, kernel_regularizer=l2(l2_reg))(static_input)
     static_x = BatchNormalization()(static_x)
     static_x = ReLU()(static_x)
     static_x = Dropout(0.4)(static_x)
     
-    combined_layer = Concatenate()([grud_layer, static_x])
+    # Combine GRU-D output with static features
+    combined_layer = Concatenate()([grud_output, static_x])
+    
+    # Shared dense layers
     shared_dense = Dense(64, kernel_regularizer=l2(l2_reg))(combined_layer)
     shared_dense = BatchNormalization()(shared_dense)
     shared_dense = ReLU()(shared_dense)
     shared_dense = Dropout(0.5)(shared_dense)
     
+    # Output layers
     mortality_output = Dense(1, activation='sigmoid', name='mortality')(shared_dense)
     los_output = Dense(1, activation='linear', name='los')(shared_dense)
     
+    # Create model
     model = Model(
         inputs={'values': values_input, 'mask': mask_input, 'time_gaps': time_gaps_input, 'static': static_input},
         outputs={'mortality': mortality_output, 'los': los_output}
     )
+    
     return model
 
 # =============================================================================
@@ -628,6 +602,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
