@@ -73,6 +73,27 @@ class GRUDCell(Layer):
         config.update({'units': self.units, 'feature_dim': self.feature_dim})
         return config
 
+# class GRUDLayer(Layer):
+#     def __init__(self, units, **kwargs):
+#         super(GRUDLayer, self).__init__(**kwargs)
+#         self.units = units
+#         self.grud_cell = None
+        
+#     def build(self, input_shape):
+#         values_shape, mask_shape, time_gaps_shape = input_shape
+#         feature_dim = values_shape[-1]
+#         self.grud_cell = GRUDCell(self.units, feature_dim)
+#         self.rnn = RNN(self.grud_cell, return_sequences=False)
+#         super().build(input_shape)
+        
+#     def call(self, inputs):
+#         return self.rnn(inputs)
+    
+#     def get_config(self):
+#         config = super().get_config()
+#         config.update({'units': self.units})
+#         return config
+
 class GRUDLayer(Layer):
     def __init__(self, units, **kwargs):
         super(GRUDLayer, self).__init__(**kwargs)
@@ -80,14 +101,46 @@ class GRUDLayer(Layer):
         self.grud_cell = None
         
     def build(self, input_shape):
+        # input_shape is a tuple of (values_shape, mask_shape, time_gaps_shape)
         values_shape, mask_shape, time_gaps_shape = input_shape
         feature_dim = values_shape[-1]
         self.grud_cell = GRUDCell(self.units, feature_dim)
-        self.rnn = RNN(self.grud_cell, return_sequences=False)
+        # IMPORTANT: Do NOT wrap inputs in RNN here
+        self.grud_cell.build(input_shape)
         super().build(input_shape)
         
     def call(self, inputs):
-        return self.rnn(inputs)
+        # inputs is a tuple of (values, mask, time_gaps)
+        # Each has shape (batch_size, timesteps, features)
+        values, mask, time_gaps = inputs
+        
+        batch_size = tf.shape(values)[0]
+        timesteps = tf.shape(values)[1]
+        
+        # Initialize hidden state
+        initial_state = tf.zeros((batch_size, self.units))
+        
+        # Process sequence manually
+        outputs = []
+        states = [initial_state]
+        
+        for t in range(timesteps):
+            # Extract timestep data
+            x_t = values[:, t, :]
+            m_t = mask[:, t, :]
+            delta_t = time_gaps[:, t, :]
+            
+            # Call GRUDCell
+            output, states = self.grud_cell([x_t, m_t, delta_t], states)
+            outputs.append(output)
+        
+        # Return only the last output (return_sequences=False)
+        return outputs[-1]
+    
+    def compute_output_shape(self, input_shape):
+        values_shape = input_shape[0]
+        batch_size = values_shape[0]
+        return (batch_size, self.units)
     
     def get_config(self):
         config = super().get_config()
@@ -552,6 +605,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
