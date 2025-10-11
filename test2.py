@@ -94,6 +94,7 @@ class GRUDCell(Layer):
 #         config.update({'units': self.units})
 #         return config
 
+
 class GRUDLayer(Layer):
     def __init__(self, units, **kwargs):
         super(GRUDLayer, self).__init__(**kwargs)
@@ -105,40 +106,61 @@ class GRUDLayer(Layer):
         values_shape, mask_shape, time_gaps_shape = input_shape
         feature_dim = values_shape[-1]
         self.grud_cell = GRUDCell(self.units, feature_dim)
-        # IMPORTANT: Do NOT wrap inputs in RNN here
         self.grud_cell.build(input_shape)
         super().build(input_shape)
         
     def call(self, inputs):
-        # inputs is a tuple of (values, mask, time_gaps)
-        # Each has shape (batch_size, timesteps, features)
-        values, mask, time_gaps = inputs
+        # Unpack inputs - handle both list and tuple
+        if isinstance(inputs, (list, tuple)):
+            if len(inputs) == 3:
+                values, mask, time_gaps = inputs
+            else:
+                # Nested tuple case
+                values, mask, time_gaps = inputs[0] if isinstance(inputs[0], (list, tuple)) else inputs
+        else:
+            raise ValueError("GRUDLayer expects 3 inputs: [values, mask, time_gaps]")
         
         batch_size = tf.shape(values)[0]
-        timesteps = tf.shape(values)[1]
+        timesteps = values.shape[1] if values.shape[1] is not None else tf.shape(values)[1]
         
         # Initialize hidden state
         initial_state = tf.zeros((batch_size, self.units))
         
-        # Process sequence manually
-        outputs = []
-        states = [initial_state]
-        
-        for t in range(timesteps):
-            # Extract timestep data
-            x_t = values[:, t, :]
-            m_t = mask[:, t, :]
-            delta_t = time_gaps[:, t, :]
+        # Use tf.TensorArray for better performance
+        def step_function(time, prev_state):
+            x_t = values[:, time, :]
+            m_t = mask[:, time, :]
+            delta_t = time_gaps[:, time, :]
             
-            # Call GRUDCell
-            output, states = self.grud_cell([x_t, m_t, delta_t], states)
-            outputs.append(output)
+            output, new_state = self.grud_cell([x_t, m_t, delta_t], prev_state)
+            return time + 1, new_state
         
-        # Return only the last output (return_sequences=False)
-        return outputs[-1]
+        # Use while_loop for static graph compatibility
+        if isinstance(timesteps, int):
+            # Static shape - can use regular loop
+            states = [initial_state]
+            for t in range(timesteps):
+                x_t = values[:, t, :]
+                m_t = mask[:, t, :]
+                delta_t = time_gaps[:, t, :]
+                _, states = self.grud_cell([x_t, m_t, delta_t], states)
+            final_output = states[0]
+        else:
+            # Dynamic shape - use while_loop
+            _, final_states = tf.while_loop(
+                cond=lambda time, _: time < timesteps,
+                body=step_function,
+                loop_vars=[0, [initial_state]]
+            )
+            final_output = final_states[0]
+        
+        return final_output
     
     def compute_output_shape(self, input_shape):
-        values_shape = input_shape[0]
+        if isinstance(input_shape[0], tuple):
+            values_shape = input_shape[0][0]
+        else:
+            values_shape = input_shape[0]
         batch_size = values_shape[0]
         return (batch_size, self.units)
     
@@ -147,14 +169,15 @@ class GRUDLayer(Layer):
         config.update({'units': self.units})
         return config
 
+
 def build_model(values_shape, mask_shape, time_gaps_shape, static_shape, l2_reg=0.01):
     values_input = Input(shape=values_shape, name='values')
     mask_input = Input(shape=mask_shape, name='mask')
     time_gaps_input = Input(shape=time_gaps_shape, name='time_gaps')
     static_input = Input(shape=static_shape, name='static')
     
-    grud_inputs = [values_input, mask_input, time_gaps_input]
-    grud_layer = GRUDLayer(64)(grud_inputs)
+    # FIX: Pass inputs as a list, not a tuple
+    grud_layer = GRUDLayer(64)([values_input, mask_input, time_gaps_input])
     
     static_x = Dense(32, kernel_regularizer=l2(l2_reg))(static_input)
     static_x = BatchNormalization()(static_x)
@@ -605,6 +628,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
