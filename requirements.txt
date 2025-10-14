@@ -1,9 +1,9 @@
-tensorflow
-pandas
 numpy
+pandas
 plotly
-protobuf
-h5py
+tensorflow==2.16.1
+streamlit 
+
 
 
 
