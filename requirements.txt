@@ -1,9 +1,10 @@
-tensorflow==2.5.0
+tensorflow
 pandas
 numpy
 plotly
 protobuf
 h5py
+
 
 
 
