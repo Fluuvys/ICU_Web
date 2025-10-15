@@ -29,6 +29,20 @@ st.markdown("""
     border-left: 5px solid #1f77b4;
     margin: 10px 0;
 }
+/* --- ADD THESE NEW CLASSES --- */
+.metric-value {
+    color: black !important;
+}
+.metric-value-increase {
+    color: #d62728 !important; /* Red */
+}
+.metric-value-decrease {
+    color: #2ca02c !important; /* Green */
+}
+.metric-value-neutral {
+    color: #1f77b4 !important; /* Blue */
+}
+/* --------------------------- */
 .high-risk {
     border-left-color: #d62728 !important;
     background-color: #ffe6e6 !important;
@@ -40,6 +54,22 @@ st.markdown("""
 .low-risk {
     border-left-color: #2ca02c !important;
     background-color: #e6ffe6 !important;
+}
+.feature-updated {
+    background-color: #fff3cd;
+    padding: 8px 12px;
+    border-radius: 5px;
+    border-left: 3px solid #ffc107;
+    margin: 5px 0;
+    font-weight: 500;
+}
+.feature-new {
+    background-color: #d1ecf1;
+    padding: 8px 12px;
+    border-radius: 5px;
+    border-left: 3px solid #17a2b8;
+    margin: 5px 0;
+    font-weight: 500;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -67,23 +97,27 @@ class GRUDCell(Layer):
         self.b_h = self.add_weight(shape=(self.units,), name='b_h', initializer='zeros')
         self.gamma_x_decay = self.add_weight(shape=(self.feature_dim,), name='gamma_x_decay', initializer='ones')
         self.gamma_h_decay = self.add_weight(shape=(self.units,), name='gamma_h_decay', initializer='ones')
-        self.mean_imputation = self.add_weight(shape=(self.feature_dim,), name='mean_imputation', initializer='zeros')
+        self.mean_imputation = self.add_weight(shape=(self.feature_dim,), name='mean_imputation', initializer='zeros', trainable=False)
         self.built = True
 
     def call(self, inputs, states):
         x = inputs[:, :self.feature_dim]
         m = inputs[:, self.feature_dim : 2 * self.feature_dim]
         delta_t = inputs[:, 2 * self.feature_dim:]
+        
         h_prev = states[0]
+
         gamma_x = tf.exp(-tf.maximum(0.0, self.gamma_x_decay) * delta_t)
         x_decayed = m * x + (1 - m) * (gamma_x * x + (1 - gamma_x) * self.mean_imputation)
-        delta_t_hidden = tf.reduce_mean(delta_t, axis=-1, keepdims=True)
-        gamma_h = tf.exp(-tf.maximum(0.0, self.gamma_h_decay) * delta_t_hidden)
+        
+        gamma_h = tf.exp(-tf.maximum(0.0, self.gamma_h_decay) * delta_t)
         h_decayed = gamma_h * h_prev
+        
         z = tf.sigmoid(K.dot(x_decayed, self.W_z) + K.dot(h_decayed, self.U_z) + self.b_z)
         r = tf.sigmoid(K.dot(x_decayed, self.W_r) + K.dot(h_decayed, self.U_r) + self.b_r)
         h_hat = tf.tanh(K.dot(x_decayed, self.W_h) + K.dot(r * h_decayed, self.U_h) + self.b_h)
         h_new = (1 - z) * h_decayed + z * h_hat
+        
         return h_new, [h_new]
 
     def get_config(self):
@@ -92,21 +126,66 @@ class GRUDCell(Layer):
         return config
 
 # ============================================================================
+# MODEL BUILDING FUNCTION
+# ============================================================================
+def build_model(dynamic_shape, static_shape, max_events=200):
+    """Builds the Keras model from scratch."""
+    values_input = keras.layers.Input(shape=(max_events, dynamic_shape), name='values')
+    mask_input = keras.layers.Input(shape=(max_events, dynamic_shape), name='mask')
+    time_gaps_input = keras.layers.Input(shape=(max_events, 1), name='time_gaps')
+    static_input = keras.layers.Input(shape=(static_shape,), name='static')
+
+    concatenated_input = keras.layers.Concatenate(axis=-1)([values_input, mask_input, time_gaps_input])
+
+    grud_cell = GRUDCell(units=64, feature_dim=dynamic_shape)
+    grud_output = keras.layers.RNN(grud_cell, return_sequences=False)(concatenated_input)
+
+    static_x = keras.layers.Dense(32, activation='relu')(static_input)
+    static_x = keras.layers.BatchNormalization()(static_x)
+    static_x = keras.layers.Dropout(0.4)(static_x)
+
+    combined = keras.layers.Concatenate()([grud_output, static_x])
+    shared_dense = keras.layers.Dense(64, activation='relu')(combined)
+    shared_dense = keras.layers.BatchNormalization()(shared_dense)
+    shared_dense = keras.layers.Dropout(0.5)(shared_dense)
+    
+    mortality_output = keras.layers.Dense(1, activation='sigmoid', name='mortality')(shared_dense)
+    los_output = keras.layers.Dense(1, activation='linear', name='los')(shared_dense)
+
+    model = keras.Model(
+        inputs={
+            'values': values_input, 
+            'mask': mask_input, 
+            'time_gaps': time_gaps_input, 
+            'static': static_input
+        },
+        outputs={
+            'mortality': mortality_output, 
+            'los': los_output
+        }
+    )
+    return model
+
+# ============================================================================
 # DATA LOADING AND FEATURE DEFINITIONS
 # ============================================================================
 @st.cache_resource
 def load_model_and_scaler():
     try:
-        model = keras.models.load_model('better_model.h5', custom_objects={'GRUDCell': GRUDCell}, compile=False)
+        dynamic_feature_count = len(DYNAMIC_FEATURES)
+        static_feature_count = len(STATIC_FEATURES)
+        model = build_model(dynamic_shape=dynamic_feature_count, static_shape=static_feature_count)
+        model.load_weights('better_model_weights.h5')
+
         with open('scaler.pkl', 'rb') as f:
             scaler_data = pickle.load(f)
             scaler = scaler_data['scaler']
             feature_names = scaler_data['feature_names']
+            
         return model, scaler, feature_names, None
     except Exception as e:
         return None, None, None, str(e)
 
-# You added 'Unnamed: 0' here, which is correct for the current model
 DYNAMIC_FEATURES = [
     'Unnamed: 0',
     'heart_rate', 'systolic_bp', 'diastolic_bp', 'mean_bp', 'temperature', 'spo2', 'respiratory_rate',
@@ -140,6 +219,12 @@ FEATURE_LABELS = {
     'respiratory_rate': 'Nhịp thở (/phút)', 'gcs_total': 'GCS Score', 'lactate': 'Lactate (mmol/L)',
     'creatinine': 'Creatinine (mg/dL)', 'wbc': 'WBC (×10⁹/L)', 'hemoglobin': 'Hemoglobin (g/dL)',
     'platelets': 'Tiểu cầu (×10⁹/L)',
+    'drug_vasopressor_inotropes': 'Thuốc vận mạch',
+    'drug_sedative_analgesic': 'An thần/giảm đau',
+    'drug_antibiotic_broad': 'Kháng sinh phổ rộng',
+    'drug_diuretic': 'Lợi tiểu',
+    'drug_anticoagulant': 'Chống đông',
+    'drug_corticosteroid': 'Corticosteroid'
 }
 
 def get_categorical_options():
@@ -183,10 +268,7 @@ def prepare_patient_for_prediction(patient_info, patient_events, scaler, feature
     
     features_to_scale = [f for f in feature_names if f in df_for_scaling.columns and f not in ['id', 'name', 'hadm_id']]
     
-    # ******** THIS IS THE FIX ********
-    # Force all columns to be float before sending to the scaler
     df_for_scaling[features_to_scale] = df_for_scaling[features_to_scale].astype(float)
-    # ********************************
 
     df_scaled = df_for_scaling.copy()
     try:
@@ -227,7 +309,6 @@ def predict_mortality(patient_info, patient_data, model, scaler, feature_names):
             return None, None
         
         predictions = model.predict(x, verbose=0)
-        # Use the correct dictionary keys to get the predictions
         mortality_risk = float(predictions['mortality'][0][0])
         los_pred = float(predictions['los'][0][0])
         return mortality_risk, los_pred
@@ -446,6 +527,93 @@ else:
 
     # Display results and charts 
     if events:
+        # ============================================================================
+        # NEW SECTION: CUMULATIVE EVENTS TABLE
+        # ============================================================================
+        st.markdown("---")
+        st.subheader("📊 Bảng Dữ Liệu Sự Kiện Liên Tục")
+        
+        # Create display dataframe with forward fill
+        display_rows = []
+        
+        # Track last known values for forward filling
+        last_values = {}
+        
+        for idx, event in enumerate(events, 1):
+            row = {
+                'Sự kiện': f"#{idx}",
+                'Thời gian': event['event_time'].strftime('%H:%M:%S') if isinstance(event['event_time'], datetime) else str(event['event_time'])
+            }
+            
+            # Add vital signs with forward fill
+            vital_features = [
+                ('heart_rate', 'Nhịp tim'),
+                ('mean_bp', 'HA TB'),
+                ('temperature', 'Nhiệt độ'),
+                ('spo2', 'SpO2'),
+                ('respiratory_rate', 'Nhịp thở'),
+                ('gcs_total', 'GCS'),
+                ('lactate', 'Lactate'),
+                ('creatinine', 'Creatinine')
+            ]
+            
+            for feature_key, display_key in vital_features:
+                value = event.get(feature_key)
+                # If value exists and is not None/NaN, update last known value
+                if value is not None and value != '' and not (isinstance(value, float) and np.isnan(value)):
+                    last_values[feature_key] = value
+                    row[display_key] = f"{value}"
+                # Otherwise, use forward filled value
+                elif feature_key in last_values:
+                    row[display_key] = f"{last_values[feature_key]} ↻"  # ↻ indicates forward filled
+                else:
+                    row[display_key] = '-'
+            
+            # Add drug indicators with forward fill
+            drug_features = [
+                ('drug_vasopressor_inotropes', 'Vận mạch'),
+                ('drug_sedative_analgesic', 'An thần'),
+                ('drug_antibiotic_broad', 'KS'),
+                ('drug_diuretic', 'Lợi tiểu'),
+                ('drug_anticoagulant', 'Chống đông'),
+                ('drug_corticosteroid', 'Cortico')
+            ]
+            
+            drugs = []
+            for drug_key, drug_name in drug_features:
+                value = event.get(drug_key)
+                # Update last known value if present
+                if value is not None and value != '':
+                    last_values[drug_key] = value
+                
+                # Check if drug is active (using forward filled value if needed)
+                if last_values.get(drug_key, 0) == 1:
+                    drugs.append(drug_name)
+            
+            row['Thuốc'] = ', '.join(drugs) if drugs else '-'
+            
+            display_rows.append(row)
+        
+        # Create DataFrame and style it
+        events_table_df = pd.DataFrame(display_rows)
+        
+        # Highlight the last row (most recent event)
+        def highlight_last_row(s):
+            return ['background-color: #fff3cd' if s.name == len(events_table_df) - 1 else '' for _ in s]
+        
+        styled_df = events_table_df.style.apply(highlight_last_row, axis=1)
+        
+        st.dataframe(
+            styled_df,
+            use_container_width=True,
+            height=min(400, 50 + len(events_table_df) * 35)
+        )
+        
+        st.caption(f"📝 Tổng số sự kiện: **{len(events)}** | Sự kiện mới nhất được tô sáng | Ký hiệu ↻ = giá trị được giữ từ lần đo trước")
+        
+        # ============================================================================
+        # EXISTING PREDICTION DISPLAY
+        # ============================================================================
         st.markdown("---")
         if history:
             latest = history[-1]
@@ -458,18 +626,25 @@ else:
             
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.markdown(f"""<div class="metric-card {risk_class}"><h2 style="margin:0;">{risk_emoji} {mortality_risk*100:.1f}%</h2><p style="margin:5px 0;">Nguy cơ tử vong: <strong>{risk_label}</strong></p><p style="margin:0; font-size:0.9em;">Dựa trên {latest['event_count']} sự kiện</p></div>""", unsafe_allow_html=True)
+                st.markdown(f"""<div class="metric-card {risk_class}"><h2 class="metric-value" style="margin:0; color: black">{risk_emoji} {mortality_risk*100:.1f}%</h2><p style="margin:5px 0; color: black">Nguy cơ tử vong: <strong>{risk_label}</strong></p><p style="margin:0; font-size:0.9em; color: black">Dựa trên {latest['event_count']} sự kiện</p></div>""", unsafe_allow_html=True)
             with col2:
-                st.markdown(f"""<div class="metric-card"><h2 style="margin:0;">📅 {los_pred:.1f} ngày</h2><p style="margin:5px 0;">Dự đoán thời gian nằm ICU</p><p style="margin:0; font-size:0.9em;">Length of Stay</p></div>""", unsafe_allow_html=True)
+                st.markdown(f"""<div class="metric-card"><h2 class="metric-value" style="margin:0; color: black">📅 {los_pred:.1f} ngày</h2><p style="margin:5px 0; color: black">Dự đoán thời gian nằm ICU</p><p style="margin:0; font-size:0.9em; color: black">Length of Stay</p></div>""", unsafe_allow_html=True)
             with col3:
                 if len(history) >= 2:
                     prev_risk = history[-2]['mortality_risk']
                     risk_change = mortality_risk - prev_risk
                     trend = "📈" if risk_change > 0 else "📉" if risk_change < 0 else "➡️"
-                    change_color = "#d62728" if risk_change > 0 else "#2ca02c" if risk_change < 0 else "#1f77b4"
+                    
+                    if risk_change > 0:
+                        change_class = "metric-value-increase"
+                    elif risk_change < 0:
+                        change_class = "metric-value-decrease"
+                    else:
+                        change_class = "metric-value-neutral"
                 else:
-                    trend, risk_change, change_color = "➡️", 0, "#1f77b4"
-                st.markdown(f"""<div class="metric-card"><h2 style="margin:0; color:{change_color};">{trend} {abs(risk_change)*100:.1f}%</h2><p style="margin:5px 0;">Thay đổi nguy cơ</p><p style="margin:0; font-size:0.9em;">So với lần đo trước</p></div>""", unsafe_allow_html=True)
+                    trend, risk_change, change_class = "➡️", 0, "metric-value-neutral"
+                
+                st.markdown(f"""<div class="metric-card"><h2 class="{change_class}" style="margin:0; color: black">{trend} {abs(risk_change)*100:.1f}%</h2><p style="margin:5px 0; color: black">Thay đổi nguy cơ</p><p style="margin:0; font-size:0.9em; color: black">So với lần đo trước</p></div>""", unsafe_allow_html=True)
         
         st.markdown("---")
         st.subheader("📊 Quỹ Đạo Nguy Cơ Tử Vong")
