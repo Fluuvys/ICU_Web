@@ -594,22 +594,16 @@ else:
             
             display_rows.append(row)
         
-        # Create DataFrame and style it
+        # Create DataFrame
         events_table_df = pd.DataFrame(display_rows)
         
-        # Highlight the last row (most recent event)
-        def highlight_last_row(s):
-            return ['background-color: #fff3cd' if s.name == len(events_table_df) - 1 else '' for _ in s]
-        
-        styled_df = events_table_df.style.apply(highlight_last_row, axis=1)
-        
         st.dataframe(
-            styled_df,
+            events_table_df,
             use_container_width=True,
             height=min(400, 50 + len(events_table_df) * 35)
         )
         
-        st.caption(f"📝 Tổng số sự kiện: **{len(events)}** | Sự kiện mới nhất được tô sáng | Ký hiệu ↻ = giá trị được giữ từ lần đo trước")
+        st.caption(f"📝 Tổng số sự kiện: **{len(events)}** | Ký hiệu ↻ = giá trị được giữ từ lần đo trước")
         
         # ============================================================================
         # EXISTING PREDICTION DISPLAY
@@ -659,7 +653,7 @@ else:
             fig.add_hrect(y0=30, y1=70, fillcolor="orange", opacity=0.1, line_width=0)
             fig.add_hrect(y0=0, y1=30, fillcolor="green", opacity=0.1, line_width=0)
             fig.update_layout(xaxis_title="Số sự kiện quan sát", yaxis_title="Nguy cơ tử vong (%)", yaxis_range=[0, 100],
-                              hovermode='x unified', height=400, showlegend=False)
+                                hovermode='x unified', height=400, showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
 
         # Event details and other charts
@@ -768,12 +762,12 @@ else:
                 history_df = pd.DataFrame(history)
                 csv = history_df.to_csv(index=False).encode('utf-8')
                 st.download_button("📥 Tải Lịch Sử Dự Đoán (CSV)", data=csv,
-                                  file_name=f"prediction_history_{patient_id}.csv", mime='text/csv', use_container_width=True)
+                                    file_name=f"prediction_history_{patient_id}.csv", mime='text/csv', use_container_width=True)
         with dl_col2:
             events_df = pd.DataFrame(events)
             csv_events = events_df.to_csv(index=False).encode('utf-8')
             st.download_button("📥 Tải Dữ Liệu Sự Kiện (CSV)", data=csv_events,
-                              file_name=f"events_{patient_id}.csv", mime='text/csv', use_container_width=True)
+                                file_name=f"events_{patient_id}.csv", mime='text/csv', use_container_width=True)
 
 # Footer
 st.markdown("---")
