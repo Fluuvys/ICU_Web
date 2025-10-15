@@ -29,6 +29,20 @@ st.markdown("""
     border-left: 5px solid #1f77b4;
     margin: 10px 0;
 }
+/* --- ADD THESE NEW CLASSES --- */
+.metric-value {
+    color: black !important;
+}
+.metric-value-increase {
+    color: #d62728 !important; /* Red */
+}
+.metric-value-decrease {
+    color: #2ca02c !important; /* Green */
+}
+.metric-value-neutral {
+    color: #1f77b4 !important; /* Blue */
+}
+/* --------------------------- */
 .high-risk {
     border-left-color: #d62728 !important;
     background-color: #ffe6e6 !important;
@@ -546,18 +560,29 @@ else:
             
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.markdown(f"""<div class="metric-card {risk_class}"><h2 style="margin:0;">{risk_emoji} {mortality_risk*100:.1f}%</h2><p style="margin:5px 0;">Nguy cơ tử vong: <strong>{risk_label}</strong></p><p style="margin:0; font-size:0.9em;">Dựa trên {latest['event_count']} sự kiện</p></div>""", unsafe_allow_html=True)
+                # Use class="metric-value" instead of inline style
+                st.markdown(f"""<div class="metric-card {risk_class}"><h2 class="metric-value" style="margin:0; color: black">{risk_emoji} {mortality_risk*100:.1f}%</h2><p style="margin:5px 0; color: black">Nguy cơ tử vong: <strong>{risk_label}</strong></p><p style="margin:0; font-size:0.9em; color: black">Dựa trên {latest['event_count']} sự kiện</p></div>""", unsafe_allow_html=True)
             with col2:
-                st.markdown(f"""<div class="metric-card"><h2 style="margin:0;">📅 {los_pred:.1f} ngày</h2><p style="margin:5px 0;">Dự đoán thời gian nằm ICU</p><p style="margin:0; font-size:0.9em;">Length of Stay</p></div>""", unsafe_allow_html=True)
+                # Use class="metric-value" instead of inline style
+                st.markdown(f"""<div class="metric-card"><h2 class="metric-value" style="margin:0; color: black">📅 {los_pred:.1f} ngày</h2><p style="margin:5px 0; color: black">Dự đoán thời gian nằm ICU</p><p style="margin:0; font-size:0.9em; color: black">Length of Stay</p></div>""", unsafe_allow_html=True)
             with col3:
+                # Logic to select the correct class based on the trend
                 if len(history) >= 2:
                     prev_risk = history[-2]['mortality_risk']
                     risk_change = mortality_risk - prev_risk
                     trend = "📈" if risk_change > 0 else "📉" if risk_change < 0 else "➡️"
-                    change_color = "#d62728" if risk_change > 0 else "#2ca02c" if risk_change < 0 else "#1f77b4"
+                    
+                    if risk_change > 0:
+                        change_class = "metric-value-increase"
+                    elif risk_change < 0:
+                        change_class = "metric-value-decrease"
+                    else:
+                        change_class = "metric-value-neutral"
                 else:
-                    trend, risk_change, change_color = "➡️", 0, "#1f77b4"
-                st.markdown(f"""<div class="metric-card"><h2 style="margin:0; color:{change_color};">{trend} {abs(risk_change)*100:.1f}%</h2><p style="margin:5px 0;">Thay đổi nguy cơ</p><p style="margin:0; font-size:0.9em;">So với lần đo trước</p></div>""", unsafe_allow_html=True)
+                    trend, risk_change, change_class = "➡️", 0, "metric-value-neutral"
+                
+                # Use the selected class name in the h2 tag
+                st.markdown(f"""<div class="metric-card"><h2 class="{change_class}" style="margin:0; color: black">{trend} {abs(risk_change)*100:.1f}%</h2><p style="margin:5px 0; color: black">Thay đổi nguy cơ</p><p style="margin:0; font-size:0.9em; color: black">So với lần đo trước</p></div>""", unsafe_allow_html=True)
         
         st.markdown("---")
         st.subheader("📊 Quỹ Đạo Nguy Cơ Tử Vong")
