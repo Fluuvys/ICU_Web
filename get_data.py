@@ -2,593 +2,515 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import os
-import io
 
 # Configuration
-CSV_FILE = "icu_patients.csv"
-TEMP_CSV_FILE = "temp_prediction_data.csv"
+CSV_FILE = "icu_patients_timeseries.csv"
 
-# Define all columns based on the medical dataset
-COLUMNS = [
-    "Timestamp", "Patient_ID", "Age", "Gender", "Insurance_Type", "Ethnicity", 
-    "Marital_Status", "Hospital_Admission_Type", "First_Care_Unit", "ICD_Code_Category",
-    "Heart_Rate", "Systolic_BP", "Diastolic_BP", "Respiratory_Rate", "Temperature",
-    "SpO2", "Glucose", "White_Blood_Cells", "Hemoglobin", "Platelets",
-    "Creatinine", "Sodium", "Potassium", "Bilirubin", "Lactate", "pH",
-    "Notes"
-]
+# All time-dependent measurements
+VITAL_SIGNS = {
+    'temperature': 'Temperature (°C)',
+    'heart_rate': 'Heart Rate (bpm)',
+    'systolic_bp': 'Systolic BP (mmHg)',
+    'diastolic_bp': 'Diastolic BP (mmHg)',
+    'mean_bp': 'Mean BP (mmHg)',
+    'respiratory_rate': 'Respiratory Rate (/min)',
+    'spo2': 'SpO2 (%)',
+    'gcs_total': 'GCS Total'
+}
 
-# Dropdown options
-GENDER_OPTIONS = ["GENDER_M", "GENDER_F"]
-INSURANCE_OPTIONS = ["insurance_group_INS_Medicaid", "insurance_group_INS_Medicare", "insurance_group_INS_Other"]
-ETHNICITY_OPTIONS = ["ethnicity_group_ETH_asian", "ethnicity_group_ETH_black", "ethnicity_group_ETH_latino", 
-                     "ethnicity_group_ETH_other", "ethnicity_group_ETH_white"]
-MARITAL_OPTIONS = ["marital_group_MAR_divorced", "marital_group_MAR_married", "marital_group_MAR_single",
-                   "marital_group_MAR_unknown", "marital_group_MAR_widowed"]
-ADMISSION_OPTIONS = ["admission_type_AMBULATORY OBSERVATION", "admission_type_DIRECT EMER.", 
-                     "admission_type_DIRECT OBSERVATION", "admission_type_ELECTIVE", 
-                     "admission_type_EU OBSERVATION", "admission_type_EW EMER.",
-                     "admission_type_OBSERVATION ADMIT", "admission_type_SURGICAL SAME DAY ADMISSION",
-                     "admission_type_URGENT"]
-FIRST_CARE_OPTIONS = ["first_careunit_Cardiac Vascular Intensive Care Unit (CVICU)",
-                      "first_careunit_Coronary Care Unit (CCU)",
-                      "first_careunit_Medical Intensive Care Unit (MICU)",
-                      "first_careunit_Medical/Surgical Intensive Care Unit (MICU/SICU)",
-                      "first_careunit_Neuro Intermediate",
-                      "first_careunit_Neuro Stepdown",
-                      "first_careunit_Neuro Surgical Intensive Care Unit (Neuro SICU)",
-                      "first_careunit_Surgical Intensive Care Unit (SICU)",
-                      "first_careunit_Trauma SICU (TSICU)"]
-ICD_CATEGORIES = ["Blood", "Circulatory", "Congenital", "Digestive", "Endocrine", "Genitourinary",
-                  "Infectious", "Injury", "Mental", "Misc", "Muscular", "Neoplasms", "Nervous",
-                  "Pregnancy", "Prenatal", "Respiratory", "Skin"]
+BLOOD_GAS = {
+    'so2': 'O2 Saturation (%)',
+    'po2': 'PaO2 (mmHg)',
+    'pco2': 'PaCO2 (mmHg)',
+    'fio2': 'FiO2 (%)',
+    'ph': 'pH',
+    'baseexcess': 'Base Excess (mEq/L)',
+    'bicarbonate': 'Bicarbonate (mEq/L)',
+    'totalco2': 'Total CO2 (mEq/L)'
+}
 
-# Initialize or migrate CSV file
+LABS_HEMATOLOGY = {
+    'hemoglobin': 'Hemoglobin (g/dL)',
+    'hematocrit': 'Hematocrit (%)',
+    'wbc': 'WBC (K/µL)',
+    'platelet': 'Platelets (K/µL)',
+    'rbc': 'RBC (M/µL)',
+    'mch': 'MCH (pg)',
+    'mchc': 'MCHC (g/dL)',
+    'mcv': 'MCV (fL)',
+    'rdw': 'RDW (%)'
+}
+
+LABS_CHEMISTRY = {
+    'glucose': 'Glucose (mg/dL)',
+    'sodium': 'Sodium (mEq/L)',
+    'potassium': 'Potassium (mEq/L)',
+    'chloride': 'Chloride (mEq/L)',
+    'calcium': 'Calcium (mg/dL)',
+    'lactate': 'Lactate (mmol/L)',
+    'creatinine': 'Creatinine (mg/dL)',
+    'bun': 'BUN (mg/dL)',
+    'aniongap': 'Anion Gap (mEq/L)'
+}
+
+LABS_LIVER = {
+    'albumin': 'Albumin (g/dL)',
+    'globulin': 'Globulin (g/dL)',
+    'total_protein': 'Total Protein (g/dL)',
+    'bilirubin': 'Bilirubin (mg/dL)',
+    'alt': 'ALT (U/L)',
+    'ast': 'AST (U/L)'
+}
+
+MEDICATIONS = {
+    'dopamine': 'Dopamine (mcg/kg/min)',
+    'epinephrine': 'Epinephrine (mcg/min)',
+    'norepinephrine': 'Norepinephrine (mcg/min)',
+    'phenylephrine': 'Phenylephrine (mcg/min)',
+    'vasopressin': 'Vasopressin (units/min)',
+    'dobutamine': 'Dobutamine (mcg/kg/min)',
+    'milrinone': 'Milrinone (mcg/kg/min)'
+}
+
+INTERVENTIONS = {
+    'mechanical_vent': 'Mechanical Ventilation',
+    'dialysis': 'Dialysis',
+    'vasopressor': 'Any Vasopressor',
+    'sedation': 'Sedation',
+    'antibiotics': 'Antibiotics'
+}
+
+# Static patient info
+STATIC_FIELDS = {
+    'patient_id': 'Patient ID',
+    'age': 'Age',
+    'gender': 'Gender',
+    'insurance': 'Insurance Type',
+    'ethnicity': 'Ethnicity',
+    'marital_status': 'Marital Status',
+    'admission_type': 'Admission Type',
+    'first_care_unit': 'First Care Unit',
+    'icd_category': 'ICD Category'
+}
+
+GENDER_OPTIONS = ["Male", "Female"]
+INSURANCE_OPTIONS = ["Medicaid", "Medicare", "Private", "Other"]
+ETHNICITY_OPTIONS = ["Asian", "Black", "Latino", "White", "Other"]
+MARITAL_OPTIONS = ["Divorced", "Married", "Single", "Unknown", "Widowed"]
+ADMISSION_OPTIONS = ["Emergency", "Elective", "Urgent", "Observation"]
+CARE_UNIT_OPTIONS = ["CVICU", "CCU", "MICU", "MICU/SICU", "Neuro ICU", "SICU", "TSICU"]
+ICD_CATEGORIES = ["Circulatory", "Respiratory", "Infectious", "Injury", "Digestive", "Nervous", "Other"]
+
+# Initialize CSV
 def init_csv():
-    if os.path.exists(CSV_FILE):
-        try:
-            df = pd.read_csv(CSV_FILE)
-            if list(df.columns) != COLUMNS:
-                st.warning("Detected old CSV format. Creating backup and initializing new format...")
-                backup_name = f"icu_patients_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-                os.rename(CSV_FILE, backup_name)
-                st.info(f"Old data backed up to: {backup_name}")
-                df = pd.DataFrame(columns=COLUMNS)
-                df.to_csv(CSV_FILE, index=False)
-                st.success("New CSV file created with updated format!")
-        except Exception as e:
-            st.error(f"Error reading CSV: {str(e)}")
-            st.warning("Creating backup and starting fresh...")
-            backup_name = f"icu_patients_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-            os.rename(CSV_FILE, backup_name)
-            df = pd.DataFrame(columns=COLUMNS)
-            df.to_csv(CSV_FILE, index=False)
-            st.success("New CSV file created!")
-    else:
-        df = pd.DataFrame(columns=COLUMNS)
+    if not os.path.exists(CSV_FILE):
+        columns = ['timestamp', 'patient_id', 'event_number'] + \
+                  list(STATIC_FIELDS.keys())[1:] + \
+                  list(VITAL_SIGNS.keys()) + \
+                  list(BLOOD_GAS.keys()) + \
+                  list(LABS_HEMATOLOGY.keys()) + \
+                  list(LABS_CHEMISTRY.keys()) + \
+                  list(LABS_LIVER.keys()) + \
+                  list(MEDICATIONS.keys()) + \
+                  list(INTERVENTIONS.keys()) + \
+                  ['urine_output', 'notes']
+        df = pd.DataFrame(columns=columns)
         df.to_csv(CSV_FILE, index=False)
 
-# Load data with error handling
 def load_data():
-    try:
-        if os.path.exists(CSV_FILE):
-            df = pd.read_csv(CSV_FILE)
-            if list(df.columns) == COLUMNS:
-                return df
-            else:
-                st.error("CSV column mismatch detected!")
-                return pd.DataFrame(columns=COLUMNS)
-        return pd.DataFrame(columns=COLUMNS)
-    except Exception as e:
-        st.error(f"Error loading data: {str(e)}")
-        return pd.DataFrame(columns=COLUMNS)
+    if os.path.exists(CSV_FILE):
+        return pd.read_csv(CSV_FILE)
+    return pd.DataFrame()
 
-# Save temporary CSV for prediction
-def save_temp_csv(df):
-    try:
-        df.to_csv(TEMP_CSV_FILE, index=False)
-        return True
-    except Exception as e:
-        st.error(f"Error saving temporary CSV: {str(e)}")
-        return False
-
-# Load temporary CSV
-def load_temp_csv():
-    try:
-        if os.path.exists(TEMP_CSV_FILE):
-            return pd.read_csv(TEMP_CSV_FILE)
-        return None
-    except Exception as e:
-        st.error(f"Error loading temporary CSV: {str(e)}")
-        return None
-
-# Get unique patient IDs
-def get_patient_ids():
+def get_patient_list():
     df = load_data()
     if len(df) > 0:
-        return sorted(df['Patient_ID'].unique().tolist())
+        return sorted(df['patient_id'].unique().tolist())
     return []
 
-# Get latest patient data
-def get_patient_data(patient_id):
+def get_patient_static_info(patient_id):
     df = load_data()
-    patient_records = df[df['Patient_ID'] == patient_id]
-    if len(patient_records) > 0:
-        return patient_records.iloc[-1].to_dict()
+    patient_data = df[df['patient_id'] == patient_id]
+    if len(patient_data) > 0:
+        return patient_data.iloc[0][list(STATIC_FIELDS.keys())].to_dict()
     return None
 
-# Save data function (for new patient)
-def save_data(data_dict):
-    try:
-        df = pd.DataFrame([data_dict])
-        if os.path.exists(CSV_FILE):
-            existing_df = pd.read_csv(CSV_FILE)
-            if list(existing_df.columns) == COLUMNS:
-                df.to_csv(CSV_FILE, mode="a", header=False, index=False)
-            else:
-                df.to_csv(CSV_FILE, mode="w", header=True, index=False)
-        else:
-            df.to_csv(CSV_FILE, mode="w", header=True, index=False)
-        return True
-    except Exception as e:
-        st.error(f"Error saving data: {str(e)}")
-        return False
-
-# Update patient data
-def update_patient_data(patient_id, data_dict):
-    try:
-        df = load_data()
-        df = df[df['Patient_ID'] != patient_id]
-        new_df = pd.DataFrame([data_dict])
-        df = pd.concat([df, new_df], ignore_index=True)
-        df.to_csv(CSV_FILE, index=False)
-        return True
-    except Exception as e:
-        st.error(f"Error updating data: {str(e)}")
-        return False
-
-# Delete patient record
-def delete_patient_record(patient_id, timestamp):
-    try:
-        df = load_data()
-        df = df[~((df['Patient_ID'] == patient_id) & (df['Timestamp'] == timestamp))]
-        df.to_csv(CSV_FILE, index=False)
-        return True
-    except Exception as e:
-        st.error(f"Error deleting record: {str(e)}")
-        return False
-
-# CSV Editor Tab
-def csv_editor_tab():
-    st.header("CSV Data Editor")
-    
+def get_patient_events(patient_id):
     df = load_data()
-    
-    if len(df) == 0:
-        st.warning("No data available to edit. Please add some patient records first.")
-        return
-    
-    # Display current data with data editor
-    st.subheader("Edit Data Directly")
-    st.info("Changes are made in memory. Click 'Save Changes to Main CSV' to persist changes.")
-    
-    # Create editable dataframe with string type for Timestamp
-    edited_df = st.data_editor(
-        df,
-        num_rows="dynamic",
-        use_container_width=True,
-        height=400,
-        column_config={
-            "Timestamp": st.column_config.TextColumn("Timestamp"),
-            "Age": st.column_config.NumberColumn("Age", min_value=0, max_value=120),
-            "Heart_Rate": st.column_config.NumberColumn("Heart Rate", min_value=0, max_value=300),
-            "Systolic_BP": st.column_config.NumberColumn("Systolic BP", min_value=0, max_value=300),
-            "Diastolic_BP": st.column_config.NumberColumn("Diastolic BP", min_value=0, max_value=200),
-            "Temperature": st.column_config.NumberColumn("Temperature", min_value=30.0, max_value=45.0, format="%.1f"),
-            "SpO2": st.column_config.NumberColumn("SpO2", min_value=0.0, max_value=100.0, format="%.1f"),
-        }
-    )
-    
-    st.divider()
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        if st.button("Save Changes to Main CSV", use_container_width=True, type="primary"):
-            try:
-                edited_df.to_csv(CSV_FILE, index=False)
-                st.success("Changes saved to main CSV successfully!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error saving changes: {str(e)}")
-    
-    with col2:
-        if st.button("Save as Temp CSV for Prediction", use_container_width=True):
-            if save_temp_csv(edited_df):
-                st.success(f"Temporary CSV saved: {TEMP_CSV_FILE}")
-                st.info("This file can now be used for model prediction.")
-            else:
-                st.error("Failed to save temporary CSV")
-    
-    with col3:
-        if st.button("Reset to Original", use_container_width=True):
-            st.info("Resetting to original data...")
-            st.rerun()
-    
-    with col4:
-        csv_data = edited_df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="Download Edited CSV",
-            data=csv_data,
-            file_name=f"edited_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
-    
-    # Show temp CSV info
-    st.divider()
-    temp_df = load_temp_csv()
-    if temp_df is not None:
-        with st.expander("Current Temporary Prediction CSV"):
-            st.dataframe(temp_df, use_container_width=True)
-            st.caption(f"Records: {len(temp_df)} | File: {TEMP_CSV_FILE}")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("Delete Temp CSV", use_container_width=True):
-                    try:
-                        os.remove(TEMP_CSV_FILE)
-                        st.success("Temporary CSV deleted!")
-                        st.rerun()
-                    except:
-                        st.error("Failed to delete temporary CSV")
-            
-            with col2:
-                temp_csv_data = temp_df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="Download Temp CSV",
-                    data=temp_csv_data,
-                    file_name=TEMP_CSV_FILE,
-                    mime="text/csv",
-                    use_container_width=True
-                )
+    return df[df['patient_id'] == patient_id].sort_values('timestamp', ascending=False)
 
-# Main App
+def get_next_event_number(patient_id):
+    df = load_data()
+    patient_events = df[df['patient_id'] == patient_id]
+    if len(patient_events) > 0:
+        return patient_events['event_number'].max() + 1
+    return 1
+
+def save_event(event_data):
+    df = load_data()
+    new_row = pd.DataFrame([event_data])
+    df = pd.concat([df, new_row], ignore_index=True)
+    df.to_csv(CSV_FILE, index=False)
+    return True
+
 def main():
-    st.set_page_config(page_title="ICU Patient Data Collection", layout="wide")
-    st.title("ICU Patient Data Collection Dashboard")
+    st.set_page_config(page_title="ICU Time-Series Data Collection", layout="wide")
+    st.title("🏥 ICU Time-Series Data Collection System")
     
-    # Initialize session state
-    if 'form_submitted' not in st.session_state:
-        st.session_state.form_submitted = False
-    if 'mode' not in st.session_state:
-        st.session_state.mode = 'new'
-    
-    # Initialize CSV
     init_csv()
     
     # Sidebar
     with st.sidebar:
-        st.header("Dashboard Controls")
-        
-        # Tab selector
-        tab_mode = st.radio(
-            "Select Mode:",
-            ["Add New Patient", "Update Patient", "CSV Editor", "View & Manage"],
-            index=0
-        )
+        st.header("Navigation")
+        page = st.radio("Select Mode:", 
+                       ["📝 New Patient", "➕ Add Event", "📊 View Data", "💾 Export Data"])
         
         st.divider()
-        
-        # Statistics
-        df = load_data()
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Total Patients", len(df['Patient_ID'].unique()) if len(df) > 0 else 0)
-        with col2:
-            st.metric("Total Records", len(df))
-        
-        # Check for temp CSV
-        if os.path.exists(TEMP_CSV_FILE):
-            temp_df = load_temp_csv()
-            if temp_df is not None:
-                st.success(f"Temp CSV: {len(temp_df)} records")
-        
-        st.divider()
-        
-        if st.button("Refresh Data", use_container_width=True):
-            st.rerun()
-        
-        if st.button("Reset Database", use_container_width=True, type="secondary"):
-            if os.path.exists(CSV_FILE):
-                backup_name = f"icu_patients_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-                os.rename(CSV_FILE, backup_name)
-                st.warning(f"Backed up to: {backup_name}")
-            init_csv()
-            st.success("Database reset!")
-            st.rerun()
+        patient_count = len(get_patient_list())
+        total_events = len(load_data())
+        st.metric("Total Patients", patient_count)
+        st.metric("Total Events", total_events)
     
-    # Show success message if form was just submitted
-    if st.session_state.form_submitted:
-        st.success("Operation completed successfully!")
-        st.session_state.form_submitted = False
-    
-    # Route to different tabs
-    if tab_mode == "CSV Editor":
-        csv_editor_tab()
-    
-    elif tab_mode == "View & Manage":
-        st.header("View & Manage Data")
+    # PAGE 1: New Patient Registration
+    if page == "📝 New Patient":
+        st.header("Register New Patient")
         
-        df = load_data()
-        if len(df) == 0:
-            st.info("No patient data yet. Submit entries to see them here!")
-        else:
-            # Search and filter
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                search_id = st.text_input("Search by Patient ID")
-            with col2:
-                filter_unit = st.multiselect("Filter by Care Unit", 
-                                            options=df['First_Care_Unit'].unique().tolist() if len(df) > 0 else [])
-            with col3:
-                filter_category = st.multiselect("Filter by ICD Category",
-                                                options=df['ICD_Code_Category'].unique().tolist() if len(df) > 0 else [])
-            
-            # Apply filters
-            filtered_df = df.copy()
-            if search_id:
-                filtered_df = filtered_df[filtered_df['Patient_ID'].str.contains(search_id, case=False, na=False)]
-            if filter_unit:
-                filtered_df = filtered_df[filtered_df['First_Care_Unit'].isin(filter_unit)]
-            if filter_category:
-                filtered_df = filtered_df[filtered_df['ICD_Code_Category'].isin(filter_category)]
-            
-            st.dataframe(filtered_df, use_container_width=True, height=400)
-            st.caption(f"Showing {len(filtered_df)} of {len(df)} records")
-            
-            # Bulk actions
-            st.divider()
-            st.subheader("Delete Records")
-            
-            if len(filtered_df) > 0:
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    selected_records = st.multiselect(
-                        "Select records to delete (Patient_ID - Timestamp):",
-                        options=[f"{row['Patient_ID']} - {row['Timestamp']}" for _, row in filtered_df.iterrows()]
-                    )
-                with col2:
-                    st.write("")
-                    st.write("")
-                    if st.button("Delete Selected", type="secondary", use_container_width=True):
-                        if selected_records:
-                            success_count = 0
-                            for record in selected_records:
-                                parts = record.split(" - ", 1)  # Split only on first occurrence
-                                if len(parts) == 2:
-                                    patient_id, timestamp = parts
-                                    if delete_patient_record(patient_id, timestamp):
-                                        success_count += 1
-                            if success_count > 0:
-                                st.success(f"Deleted {success_count} record(s)!")
-                                st.rerun()
-                            else:
-                                st.error("Failed to delete records!")
-                        else:
-                            st.warning("Please select records to delete")
-            
-            # Download options
-            st.divider()
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                csv = filtered_df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="Download Filtered Data",
-                    data=csv,
-                    file_name=f"filtered_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-            with col2:
-                csv_all = df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="Download All Data",
-                    data=csv_all,
-                    file_name=f"all_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-            with col3:
-                if st.button("Save All as Temp CSV", use_container_width=True):
-                    if save_temp_csv(df):
-                        st.success("Saved as temporary prediction CSV!")
-    
-    elif tab_mode == "Update Patient":
-        st.header("Update Existing Patient")
-        patient_ids = get_patient_ids()
-        
-        if len(patient_ids) == 0:
-            st.warning("No patients in database. Please add a new patient first.")
-        else:
-            selected_patient = st.selectbox("Select Patient ID to Update:", patient_ids)
-            
-            if selected_patient:
-                patient_data = get_patient_data(selected_patient)
-                
-                with st.expander("View Patient Current Data"):
-                    df = load_data()
-                    patient_history = df[df['Patient_ID'] == selected_patient]
-                    st.dataframe(patient_history, use_container_width=True)
-                
-                with st.form("update_form", clear_on_submit=True):
-                    st.subheader(f"Update Patient: {selected_patient}")
-                    st.info(f"Last updated: {patient_data['Timestamp']}")
-                    
-                    st.divider()
-                    st.subheader("Vital Signs & Lab Results")
-                    
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        heart_rate = st.number_input("Heart Rate (bpm)", 0, 300, int(patient_data['Heart_Rate']))
-                        systolic_bp = st.number_input("Systolic BP (mmHg)", 0, 300, int(patient_data['Systolic_BP']))
-                        respiratory_rate = st.number_input("Respiratory Rate", 0, 100, int(patient_data['Respiratory_Rate']))
-                        spo2 = st.number_input("SpO2 (%)", 0.0, 100.0, float(patient_data['SpO2']), 0.1)
-                        white_blood_cells = st.number_input("WBC (K/µL)", 0.0, 50.0, float(patient_data['White_Blood_Cells']), 0.1)
-                        creatinine = st.number_input("Creatinine (mg/dL)", 0.0, 20.0, float(patient_data['Creatinine']), 0.1)
-                    
-                    with col2:
-                        diastolic_bp = st.number_input("Diastolic BP (mmHg)", 0, 200, int(patient_data['Diastolic_BP']))
-                        temperature = st.number_input("Temperature (°C)", 30.0, 45.0, float(patient_data['Temperature']), 0.1)
-                        glucose = st.number_input("Glucose (mg/dL)", 0, 1000, int(patient_data['Glucose']))
-                        hemoglobin = st.number_input("Hemoglobin (g/dL)", 0.0, 25.0, float(patient_data['Hemoglobin']), 0.1)
-                        sodium = st.number_input("Sodium (mEq/L)", 0, 200, int(patient_data['Sodium']))
-                    
-                    with col3:
-                        platelets = st.number_input("Platelets (K/µL)", 0, 1000, int(patient_data['Platelets']))
-                        potassium = st.number_input("Potassium (mEq/L)", 0.0, 10.0, float(patient_data['Potassium']), 0.1)
-                        bilirubin = st.number_input("Bilirubin (mg/dL)", 0.0, 30.0, float(patient_data['Bilirubin']), 0.1)
-                    
-                    with col4:
-                        lactate = st.number_input("Lactate (mmol/L)", 0.0, 20.0, float(patient_data['Lactate']), 0.1)
-                        ph = st.number_input("pH", 6.0, 8.0, float(patient_data['pH']), 0.01)
-                    
-                    st.divider()
-                    notes = st.text_area("Additional Notes", height=100, value=str(patient_data.get('Notes', '')))
-                    
-                    update_button = st.form_submit_button("Update Patient Data", use_container_width=True, type="primary")
-                
-                if update_button:
-                    updated_data = {
-                        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "Patient_ID": selected_patient,
-                        "Age": patient_data['Age'],
-                        "Gender": patient_data['Gender'],
-                        "Insurance_Type": patient_data['Insurance_Type'],
-                        "Ethnicity": patient_data['Ethnicity'],
-                        "Marital_Status": patient_data['Marital_Status'],
-                        "Hospital_Admission_Type": patient_data['Hospital_Admission_Type'],
-                        "First_Care_Unit": patient_data['First_Care_Unit'],
-                        "ICD_Code_Category": patient_data['ICD_Code_Category'],
-                        "Heart_Rate": heart_rate,
-                        "Systolic_BP": systolic_bp,
-                        "Diastolic_BP": diastolic_bp,
-                        "Respiratory_Rate": respiratory_rate,
-                        "Temperature": temperature,
-                        "SpO2": spo2,
-                        "Glucose": glucose,
-                        "White_Blood_Cells": white_blood_cells,
-                        "Hemoglobin": hemoglobin,
-                        "Platelets": platelets,
-                        "Creatinine": creatinine,
-                        "Sodium": sodium,
-                        "Potassium": potassium,
-                        "Bilirubin": bilirubin,
-                        "Lactate": lactate,
-                        "pH": ph,
-                        "Notes": notes
-                    }
-                    
-                    if update_patient_data(selected_patient, updated_data):
-                        st.session_state.form_submitted = True
-                        st.rerun()
-    
-    else:  # Add New Patient
-        st.header("Add New Patient")
-        
-        with st.form("patient_form", clear_on_submit=True):
+        with st.form("new_patient_form"):
             st.subheader("Patient Demographics")
-            
             col1, col2, col3 = st.columns(3)
+            
             with col1:
-                patient_id = st.text_input("Patient ID*", placeholder="e.g., ICU-001")
-                age = st.number_input("Age (years)*", min_value=60, max_value=120, value=65, step=1)
+                patient_id = st.text_input("Patient ID*", placeholder="ICU-001")
+                age = st.number_input("Age*", 18, 120, 65)
                 gender = st.selectbox("Gender*", GENDER_OPTIONS)
             
             with col2:
-                insurance = st.selectbox("Insurance Type*", INSURANCE_OPTIONS)
+                insurance = st.selectbox("Insurance*", INSURANCE_OPTIONS)
                 ethnicity = st.selectbox("Ethnicity*", ETHNICITY_OPTIONS)
-                marital = st.selectbox("Marital Status*", MARITAL_OPTIONS)
+                marital_status = st.selectbox("Marital Status*", MARITAL_OPTIONS)
             
             with col3:
                 admission_type = st.selectbox("Admission Type*", ADMISSION_OPTIONS)
-                first_care = st.selectbox("First Care Unit*", FIRST_CARE_OPTIONS)
-                icd_category = st.selectbox("ICD Code Category*", ICD_CATEGORIES)
+                first_care_unit = st.selectbox("First Care Unit*", CARE_UNIT_OPTIONS)
+                icd_category = st.selectbox("ICD Category*", ICD_CATEGORIES)
             
             st.divider()
-            st.subheader("Vital Signs & Lab Results")
+            st.subheader("Initial Event Data")
+            st.info("Fill in the initial measurements for this patient")
             
-            col1, col2, col3, col4 = st.columns(4)
+            # Vital Signs
+            with st.expander("🫀 Vital Signs", expanded=True):
+                cols = st.columns(4)
+                vitals_data = {}
+                for idx, (key, label) in enumerate(VITAL_SIGNS.items()):
+                    with cols[idx % 4]:
+                        vitals_data[key] = st.number_input(label, value=None, step=0.1)
+            
+            # Blood Gas
+            with st.expander("💉 Blood Gas"):
+                cols = st.columns(4)
+                bloodgas_data = {}
+                for idx, (key, label) in enumerate(BLOOD_GAS.items()):
+                    with cols[idx % 4]:
+                        bloodgas_data[key] = st.number_input(label, value=None, step=0.01)
+            
+            # Labs - Hematology
+            with st.expander("🩸 Hematology"):
+                cols = st.columns(4)
+                heme_data = {}
+                for idx, (key, label) in enumerate(LABS_HEMATOLOGY.items()):
+                    with cols[idx % 4]:
+                        heme_data[key] = st.number_input(label, value=None, step=0.1)
+            
+            # Labs - Chemistry
+            with st.expander("🧪 Chemistry"):
+                cols = st.columns(4)
+                chem_data = {}
+                for idx, (key, label) in enumerate(LABS_CHEMISTRY.items()):
+                    with cols[idx % 4]:
+                        chem_data[key] = st.number_input(label, value=None, step=0.1)
+            
+            # Labs - Liver
+            with st.expander("🫘 Liver Function"):
+                cols = st.columns(3)
+                liver_data = {}
+                for idx, (key, label) in enumerate(LABS_LIVER.items()):
+                    with cols[idx % 3]:
+                        liver_data[key] = st.number_input(label, value=None, step=0.1)
+            
+            # Medications
+            with st.expander("💊 Medications"):
+                cols = st.columns(4)
+                meds_data = {}
+                for idx, (key, label) in enumerate(MEDICATIONS.items()):
+                    with cols[idx % 4]:
+                        meds_data[key] = st.number_input(label, value=None, step=0.01)
+            
+            # Interventions
+            with st.expander("🏥 Interventions"):
+                cols = st.columns(5)
+                interv_data = {}
+                for idx, (key, label) in enumerate(INTERVENTIONS.items()):
+                    with cols[idx % 5]:
+                        interv_data[key] = st.checkbox(label)
+            
+            # Additional
+            st.divider()
+            col1, col2 = st.columns(2)
             with col1:
-                heart_rate = st.number_input("Heart Rate (bpm)", 0, 300, 80)
-                systolic_bp = st.number_input("Systolic BP (mmHg)", 0, 300, 120)
-                respiratory_rate = st.number_input("Respiratory Rate", 0, 100, 16)
-                spo2 = st.number_input("SpO2 (%)", 0.0, 100.0, 98.0, 0.1)
-                white_blood_cells = st.number_input("WBC (K/µL)", 0.0, 50.0, 8.0, 0.1)
-                creatinine = st.number_input("Creatinine (mg/dL)", 0.0, 20.0, 1.0, 0.1)
-            
+                urine_output = st.number_input("Urine Output (mL)", value=None, step=1.0)
             with col2:
-                diastolic_bp = st.number_input("Diastolic BP (mmHg)", 0, 200, 80)
-                temperature = st.number_input("Temperature (°C)", 30.0, 45.0, 37.0, 0.1)
-                glucose = st.number_input("Glucose (mg/dL)", 0, 1000, 100)
-                hemoglobin = st.number_input("Hemoglobin (g/dL)", 0.0, 25.0, 14.0, 0.1)
-                sodium = st.number_input("Sodium (mEq/L)", 0, 200, 140)
+                notes = st.text_area("Notes", height=100)
             
-            with col3:
-                platelets = st.number_input("Platelets (K/µL)", 0, 1000, 250)
-                potassium = st.number_input("Potassium (mEq/L)", 0.0, 10.0, 4.0, 0.1)
-                bilirubin = st.number_input("Bilirubin (mg/dL)", 0.0, 30.0, 1.0, 0.1)
-            
-            with col4:
-                lactate = st.number_input("Lactate (mmol/L)", 0.0, 20.0, 1.5, 0.1)
-                ph = st.number_input("pH", 6.0, 8.0, 7.4, 0.01)
-            
-            st.divider()
-            notes = st.text_area("Additional Notes", height=100, placeholder="Any additional observations or comments...")
-            
-            submitted = st.form_submit_button("Submit Patient Data", use_container_width=True, type="primary")
+            submitted = st.form_submit_button("Register Patient", type="primary", use_container_width=True)
         
         if submitted:
             if not patient_id:
                 st.error("Patient ID is required!")
+            elif patient_id in get_patient_list():
+                st.error(f"Patient {patient_id} already exists!")
             else:
-                existing_ids = get_patient_ids()
-                if patient_id in existing_ids:
-                    st.error(f"Patient ID '{patient_id}' already exists! Please use 'Update Patient' mode or choose a different ID.")
+                event_data = {
+                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    'patient_id': patient_id,
+                    'event_number': 1,
+                    'age': age,
+                    'gender': gender,
+                    'insurance': insurance,
+                    'ethnicity': ethnicity,
+                    'marital_status': marital_status,
+                    'admission_type': admission_type,
+                    'first_care_unit': first_care_unit,
+                    'icd_category': icd_category,
+                    **vitals_data,
+                    **bloodgas_data,
+                    **heme_data,
+                    **chem_data,
+                    **liver_data,
+                    **meds_data,
+                    **{k: 1 if v else 0 for k, v in interv_data.items()},
+                    'urine_output': urine_output,
+                    'notes': notes
+                }
+                
+                if save_event(event_data):
+                    st.success(f"✅ Patient {patient_id} registered successfully!")
+                    st.balloons()
                 else:
-                    data_dict = {
-                        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "Patient_ID": patient_id,
-                        "Age": age,
-                        "Gender": gender,
-                        "Insurance_Type": insurance,
-                        "Ethnicity": ethnicity,
-                        "Marital_Status": marital,
-                        "Hospital_Admission_Type": admission_type,
-                        "First_Care_Unit": first_care,
-                        "ICD_Code_Category": icd_category,
-                        "Heart_Rate": heart_rate,
-                        "Systolic_BP": systolic_bp,
-                        "Diastolic_BP": diastolic_bp,
-                        "Respiratory_Rate": respiratory_rate,
-                        "Temperature": temperature,
-                        "SpO2": spo2,
-                        "Glucose": glucose,
-                        "White_Blood_Cells": white_blood_cells,
-                        "Hemoglobin": hemoglobin,
-                        "Platelets": platelets,
-                        "Creatinine": creatinine,
-                        "Sodium": sodium,
-                        "Potassium": potassium,
-                        "Bilirubin": bilirubin,
-                        "Lactate": lactate,
-                        "pH": ph,
-                        "Notes": notes
+                    st.error("Failed to save patient data!")
+    
+    # PAGE 2: Add Event
+    elif page == "➕ Add Event":
+        st.header("Add New Event for Existing Patient")
+        
+        patients = get_patient_list()
+        if not patients:
+            st.warning("No patients registered yet. Please register a patient first.")
+        else:
+            selected_patient = st.selectbox("Select Patient", patients)
+            
+            if selected_patient:
+                static_info = get_patient_static_info(selected_patient)
+                next_event = get_next_event_number(selected_patient)
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Patient ID", selected_patient)
+                with col2:
+                    st.metric("Age", static_info['age'])
+                with col3:
+                    st.metric("Next Event #", next_event)
+                
+                st.divider()
+                
+                with st.form(f"event_form_{selected_patient}"):
+                    st.subheader(f"Event #{next_event} Data")
+                    
+                    # Vital Signs
+                    with st.expander("🫀 Vital Signs", expanded=True):
+                        cols = st.columns(4)
+                        vitals_data = {}
+                        for idx, (key, label) in enumerate(VITAL_SIGNS.items()):
+                            with cols[idx % 4]:
+                                vitals_data[key] = st.number_input(label, value=None, step=0.1, key=f"v_{key}")
+                    
+                    # Blood Gas
+                    with st.expander("💉 Blood Gas"):
+                        cols = st.columns(4)
+                        bloodgas_data = {}
+                        for idx, (key, label) in enumerate(BLOOD_GAS.items()):
+                            with cols[idx % 4]:
+                                bloodgas_data[key] = st.number_input(label, value=None, step=0.01, key=f"bg_{key}")
+                    
+                    # Labs - Hematology
+                    with st.expander("🩸 Hematology"):
+                        cols = st.columns(4)
+                        heme_data = {}
+                        for idx, (key, label) in enumerate(LABS_HEMATOLOGY.items()):
+                            with cols[idx % 4]:
+                                heme_data[key] = st.number_input(label, value=None, step=0.1, key=f"h_{key}")
+                    
+                    # Labs - Chemistry
+                    with st.expander("🧪 Chemistry"):
+                        cols = st.columns(4)
+                        chem_data = {}
+                        for idx, (key, label) in enumerate(LABS_CHEMISTRY.items()):
+                            with cols[idx % 4]:
+                                chem_data[key] = st.number_input(label, value=None, step=0.1, key=f"c_{key}")
+                    
+                    # Labs - Liver
+                    with st.expander("🫘 Liver Function"):
+                        cols = st.columns(3)
+                        liver_data = {}
+                        for idx, (key, label) in enumerate(LABS_LIVER.items()):
+                            with cols[idx % 3]:
+                                liver_data[key] = st.number_input(label, value=None, step=0.1, key=f"l_{key}")
+                    
+                    # Medications
+                    with st.expander("💊 Medications"):
+                        cols = st.columns(4)
+                        meds_data = {}
+                        for idx, (key, label) in enumerate(MEDICATIONS.items()):
+                            with cols[idx % 4]:
+                                meds_data[key] = st.number_input(label, value=None, step=0.01, key=f"m_{key}")
+                    
+                    # Interventions
+                    with st.expander("🏥 Interventions"):
+                        cols = st.columns(5)
+                        interv_data = {}
+                        for idx, (key, label) in enumerate(INTERVENTIONS.items()):
+                            with cols[idx % 5]:
+                                interv_data[key] = st.checkbox(label, key=f"i_{key}")
+                    
+                    # Additional
+                    st.divider()
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        urine_output = st.number_input("Urine Output (mL)", value=None, step=1.0)
+                    with col2:
+                        notes = st.text_area("Notes", height=100)
+                    
+                    submitted = st.form_submit_button("Add Event", type="primary", use_container_width=True)
+                
+                if submitted:
+                    event_data = {
+                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        'patient_id': selected_patient,
+                        'event_number': next_event,
+                        **static_info,
+                        **vitals_data,
+                        **bloodgas_data,
+                        **heme_data,
+                        **chem_data,
+                        **liver_data,
+                        **meds_data,
+                        **{k: 1 if v else 0 for k, v in interv_data.items()},
+                        'urine_output': urine_output,
+                        'notes': notes
                     }
                     
-                    if save_data(data_dict):
-                        st.session_state.form_submitted = True
+                    if save_event(event_data):
+                        st.success(f"✅ Event #{next_event} added for patient {selected_patient}!")
                         st.rerun()
+    
+    # PAGE 3: View Data
+    elif page == "📊 View Data":
+        st.header("View Patient Data")
+        
+        patients = get_patient_list()
+        if not patients:
+            st.info("No patient data available yet.")
+        else:
+            selected_patient = st.selectbox("Select Patient to View", patients)
+            
+            if selected_patient:
+                events_df = get_patient_events(selected_patient)
+                
+                st.subheader(f"Patient: {selected_patient}")
+                st.metric("Total Events", len(events_df))
+                
+                st.divider()
+                
+                # Show data in tabs
+                tab1, tab2, tab3 = st.tabs(["📋 All Events", "📈 Latest Values", "🔍 Search"])
+                
+                with tab1:
+                    st.dataframe(events_df, use_container_width=True, height=600)
+                
+                with tab2:
+                    if len(events_df) > 0:
+                        latest = events_df.iloc[0]
+                        
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.write("**Vital Signs**")
+                            for key in VITAL_SIGNS.keys():
+                                if pd.notna(latest[key]):
+                                    st.metric(VITAL_SIGNS[key], f"{latest[key]}")
+                        
+                        with col2:
+                            st.write("**Key Labs**")
+                            for key in ['lactate', 'creatinine', 'wbc', 'platelet']:
+                                if pd.notna(latest[key]):
+                                    st.metric(LABS_CHEMISTRY.get(key) or LABS_HEMATOLOGY.get(key), f"{latest[key]}")
+                        
+                        with col3:
+                            st.write("**Interventions**")
+                            for key in INTERVENTIONS.keys():
+                                if latest[key] == 1:
+                                    st.success(f"✓ {INTERVENTIONS[key]}")
+                
+                with tab3:
+                    search_col = st.selectbox("Search by column", events_df.columns.tolist())
+                    search_val = st.text_input("Search value")
+                    if search_val:
+                        filtered = events_df[events_df[search_col].astype(str).str.contains(search_val, case=False, na=False)]
+                        st.dataframe(filtered, use_container_width=True)
+    
+    # PAGE 4: Export Data
+    elif page == "💾 Export Data":
+        st.header("Export Patient Data")
+        
+        df = load_data()
+        
+        if len(df) == 0:
+            st.info("No data to export yet.")
+        else:
+            st.subheader("Export Options")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Export All Data**")
+                csv_all = df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "📥 Download All Events (CSV)",
+                    data=csv_all,
+                    file_name=f"icu_all_events_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+            
+            with col2:
+                st.write("**Export by Patient**")
+                patients = get_patient_list()
+                if patients:
+                    export_patient = st.selectbox("Select Patient", patients)
+                    if export_patient:
+                        patient_df = df[df['patient_id'] == export_patient]
+                        csv_patient = patient_df.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            f"📥 Download {export_patient} Events",
+                            data=csv_patient,
+                            file_name=f"icu_{export_patient}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv",
+                            use_container_width=True
+                        )
+            
+            st.divider()
+            st.subheader("Preview Data")
+            st.dataframe(df.head(100), use_container_width=True)
+            st.caption(f"Showing first 100 of {len(df)} records")
 
 if __name__ == "__main__":
     main()
